@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# shellcheck disable=SC2034,SC2086,SC2116
+# shellcheck disable=SC2034,SC2086,SC2116,SC2031
 dns_dnshe_info='DNSHE
 Site: DNSHE.com
 Docs: https://docs.dnshe.com/api/
@@ -54,7 +54,7 @@ dns_dnshe_add() {
 
   # 查询现有记录（精准匹配域名+内容）
   _dnshe_get_txt_record_id "$txtvalue"
-  
+
   # 存在则检查内容，不存在则创建
   if [ -n "$_record_id" ]; then
     if _dnshe_check_record_content "$txtvalue"; then
@@ -81,7 +81,7 @@ dns_dnshe_add() {
         return 1
       fi
     fi
-    
+
     _info "TXT记录不存在，执行创建操作"
     if [ -z "$_subdomain_id" ]; then
       _err "子域ID为空，无法创建记录"
@@ -161,11 +161,11 @@ _dnshe_split_domain() {
   domain=$1
   # 清除首尾多余的点（POSIX兼容）
   domain=$(echo "$domain" | sed -e 's/\.\+$//' -e 's/^\.\+//')
-  
+
   # 替换Bash数组：用IFS+set拆分域名（纯POSIX）
   IFS='.'
   set -- $domain
-  IFS=' '  # 恢复默认IFS
+  IFS=' ' # 恢复默认IFS
   part_count=$#
 
   # POSIX条件判断：仅用 [ ]
@@ -189,17 +189,17 @@ _dnshe_split_domain() {
     _target_subdomain=""
     _txt_prefix=""
     count=1
-    for arg do
-      if [ "$count" -eq $((part_count-1)) ]; then
+    for arg; do
+      if [ "$count" -eq $((part_count - 1)) ]; then
         _root_domain="$arg"
       elif [ "$count" -eq "$part_count" ]; then
         _root_domain="$_root_domain.$arg"
-      elif [ "$count" -eq $((part_count-2)) ]; then
+      elif [ "$count" -eq $((part_count - 2)) ]; then
         _target_subdomain="$arg"
-      elif [ "$count" -lt $((part_count-2)) ]; then
+      elif [ "$count" -lt $((part_count - 2)) ]; then
         _txt_prefix="$_txt_prefix$arg."
       fi
-      count=$((count+1))
+      count=$((count + 1))
     done
     _target_subdomain="$_target_subdomain.$_root_domain"
     # 去除txt_prefix末尾的点
@@ -213,11 +213,11 @@ _dnshe_split_domain() {
   return 0
 }
 
-# 获取子域ID（移除所有Bash专属语法）
+# 获取子域ID（移除所有Bash专属语法 + 修复子shell变量丢失）
 _dnshe_get_subdomain_id() {
   subdomain_list_url="${DNSHE_Api}&endpoint=subdomains&action=list"
   subdomain_list_resp=$(_dnshe_rest GET "$subdomain_list_url")
-  
+
   if ! _dnshe_is_success "$subdomain_list_resp"; then
     err=$(_dnshe_extract_error "$subdomain_list_resp")
     _err "查询子域列表失败: $err"
@@ -229,12 +229,12 @@ _dnshe_get_subdomain_id() {
   _subdomain_id=""
   current_id=""
   current_subdomain=""
-  
+
   # 拆分JSON为单行（纯POSIX管道，无进程替换）
   json_lines=$(echo "$subdomain_list_resp" | tr '}' '\n' | tr ',' '\n' | tr '{' '\n')
-  
-  # POSIX while循环（无Bash语法）
-  echo "$json_lines" | while IFS= read -r line; do
+
+  # 修复子shell问题：用here string替代管道，避免子shell
+  while IFS= read -r line; do
     if echo "$line" | grep -q '"id":'; then
       current_id=$(echo "$line" | sed 's/[^0-9]//g')
     fi
@@ -246,7 +246,9 @@ _dnshe_get_subdomain_id() {
         break
       fi
     fi
-  done
+  done << EOF
+$json_lines
+EOF
 
   if [ -z "$_subdomain_id" ]; then
     _err "未找到子域: $_target_subdomain（请先在DNSHE后台注册该子域）"
@@ -259,7 +261,7 @@ _dnshe_get_subdomain_id() {
   return 0
 }
 
-# 精准查询TXT记录ID（纯POSIX）
+# 精准查询TXT记录ID（纯POSIX + 修复子shell变量丢失）
 _dnshe_get_txt_record_id() {
   txt_value=$1
   list_url="${DNSHE_Api}&endpoint=dns_records&action=list&subdomain_id=$_subdomain_id"
@@ -277,10 +279,11 @@ _dnshe_get_txt_record_id() {
   current_type=""
   current_name=""
   current_content=""
-  
+
   json_lines=$(echo "$list_resp" | tr '}' '\n' | tr ',' '\n' | tr '{' '\n')
-  
-  echo "$json_lines" | while IFS= read -r line; do
+
+  # 修复子shell问题：用here string替代管道
+  while IFS= read -r line; do
     if echo "$line" | grep -q '"id":'; then
       current_id=$(echo "$line" | sed 's/[^0-9]//g')
     fi
@@ -292,20 +295,22 @@ _dnshe_get_txt_record_id() {
     fi
     if echo "$line" | grep -q '"content":"'; then
       current_content=$(echo "$line" | sed 's/.*"content":"//;s/".*//' | tr -d ' ')
-      
+
       # POSIX条件判断：仅用 [ ]，拆分多个条件
       if [ "$current_type" = "TXT" ] && [ "$current_name" = "$_full_txt_domain" ] && [ "$current_content" = "$txt_value" ] && [ -n "$current_id" ]; then
         _record_id="$current_id"
         break
       fi
     fi
-  done
+  done << EOF
+$json_lines
+EOF
 
   _debug "精准匹配到的TXT记录ID: $_record_id"
   return 0
 }
 
-# 检查记录内容是否一致（纯POSIX）
+# 检查记录内容是否一致（纯POSIX + 修复子shell变量丢失）
 _dnshe_check_record_content() {
   txt_value=$1
   list_url="${DNSHE_Api}&endpoint=dns_records&action=list&subdomain_id=$_subdomain_id"
@@ -313,8 +318,9 @@ _dnshe_check_record_content() {
 
   current_content=""
   json_lines=$(echo "$list_resp" | tr '}' '\n' | tr ',' '\n' | tr '{' '\n')
-  
-  echo "$json_lines" | while IFS= read -r line; do
+
+  # 修复子shell问题：用here string替代管道
+  while IFS= read -r line; do
     # POSIX兼容：拆分grep条件，避免Bash专属的[[ ]]
     if echo "$line" | grep -q "\"id\":\"$_record_id\""; then
       if echo "$line" | grep -q '"content":"'; then
@@ -322,7 +328,9 @@ _dnshe_check_record_content() {
         break
       fi
     fi
-  done
+  done << EOF
+$json_lines
+EOF
 
   if [ "$current_content" = "$txt_value" ]; then
     return 0
@@ -332,7 +340,7 @@ _dnshe_check_record_content() {
   fi
 }
 
-# 检查同名不同内容的冲突记录（纯POSIX）
+# 检查同名不同内容的冲突记录（纯POSIX + 修复子shell变量丢失）
 _dnshe_check_same_name_record() {
   _conflict_record_id=""
   list_url="${DNSHE_Api}&endpoint=dns_records&action=list&subdomain_id=$_subdomain_id"
@@ -341,10 +349,11 @@ _dnshe_check_same_name_record() {
   current_id=""
   current_type=""
   current_name=""
-  
+
   json_lines=$(echo "$list_resp" | tr '}' '\n' | tr ',' '\n' | tr '{' '\n')
-  
-  echo "$json_lines" | while IFS= read -r line; do
+
+  # 修复子shell问题：用here string替代管道
+  while IFS= read -r line; do
     if echo "$line" | grep -q '"id":'; then
       current_id=$(echo "$line" | sed 's/[^0-9]//g')
     fi
@@ -353,14 +362,16 @@ _dnshe_check_same_name_record() {
     fi
     if echo "$line" | grep -q '"name":"'; then
       current_name=$(echo "$line" | sed 's/.*"name":"//;s/".*//' | tr -d ' ')
-      
+
       # POSIX条件判断
       if [ "$current_type" = "TXT" ] && [ "$current_name" = "$_full_txt_domain" ] && [ "$current_id" != "$_record_id" ] && [ -n "$current_id" ]; then
         _conflict_record_id="$current_id"
         break
       fi
     fi
-  done
+  done << EOF
+$json_lines
+EOF
 
   _debug "检测到同名冲突记录ID: $_conflict_record_id"
 }
@@ -371,7 +382,7 @@ _dnshe_delete_specific_record() {
   delete_url="${DNSHE_Api}&endpoint=dns_records&action=delete"
   # POSIX兼容的printf（无Bash专属格式）
   delete_data=$(printf '{"record_id": %d}' "$record_id")
-  
+
   _debug "删除指定记录请求数据: $delete_data"
   delete_resp=$(_dnshe_rest POST "$delete_url" "$delete_data")
 
